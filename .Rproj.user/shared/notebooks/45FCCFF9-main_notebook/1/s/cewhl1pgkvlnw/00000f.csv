@@ -1,0 +1,18 @@
+"0","mod_03 <- lm(log(imr) ~ yrs_since_1970 + sex + code + post_2012, 
+             #post_2012 is our 'flag'
+             data = training_data |> 
+               mutate(post_2012 = year >= 2012)
+          )
+"
+"1","[1m[33mError[39m in `mutate()`:[22m
+[38;5;255m[36mℹ[38;5;255m In argument: `post_2012 = year >= 2012`.[39m
+[1mCaused by error in `year >= 2012`:[22m
+[33m![39m comparison (>=) is possible only for atomic and list types
+Backtrace:
+[90m  1. [39m[1mstats[22m::lm(...)
+[90m  8. [39m[1m[94mdplyr:::mutate.data.frame([39m[22mtraining_data, post_2012 = year >= 2012[1m[94m)[39m[22m
+[90m  9. [39mdplyr:::mutate_cols(.data, dplyr_quosures(...), by)
+[90m 11. [39mdplyr:::mutate_col(dots[[i]], data, mask, new_columns)
+[90m 12. [39mmask$eval_all_mutate(quo)
+[90m 13. [39m[1mdplyr[22m (local) eval()
+"

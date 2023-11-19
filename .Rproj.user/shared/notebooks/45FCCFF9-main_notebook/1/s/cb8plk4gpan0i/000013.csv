@@ -1,0 +1,15 @@
+"0","preds_pred_df |> 
+  left_join(training_data) |> 
+  mutate(
+    obs_limr = log(imr)
+  ) |> 
+  ggplot(aes(x = cohort, color = sex)) + 
+  geom_point(aes(y = obs_limr)) + 
+  geom_line(aes(y = pred_limr)) + 
+  facet_wrap(~code) + 
+  labs(x = ""Birth cohort"", 
+       y = ""Log IMR"",
+       title = ""Observed and predicted Log IMR for selected countries"",
+       subtitle = ""Points: Observed. Lines: Predicted"")
+"
+"2","Joining with `by = join_by(cohort, sex, code, yrs_since_1970)`"

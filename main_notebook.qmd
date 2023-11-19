@@ -1,0 +1,461 @@
+---
+title: "Modelling Country Effect IMR differences"
+format: html
+editor: visual
+author: "Jon Minton"
+---
+
+## Aim 
+
+This document will show some possible strategies for modelling infant mortality trends over time and differences between populations
+
+## Preparation
+
+First we need some data. I'll take data from the Human Mortality Database
+
+```{r}
+#| cache: true
+#| eval: false
+library(tidyverse)
+library(HMDHFDplus)
+
+HMDHFDplus::getHMDcountries()
+HMDHFDplus::getHMDitemavail("GBR_NP")
+
+# Countries of interest 
+df <- tibble(
+  code = c(
+  "AUT", #Austria
+  "BEL", #Belgium
+  "FIN", #Finland
+  "FRATNP", #France
+  "DEUTNP", #Germany
+  "ITA", #Italy
+  "NLD", #Netherlands
+  "NOR", #Norway
+  "POL", #Poland
+  "SWE", #Sweden
+  "USA", #USA
+  "GBR_NP" #UK
+  )
+)
+
+df <- df |> 
+  mutate(
+    death_tri = map(
+      code, 
+      function(x) {
+      HMDHFDplus::readHMDweb(x, "Deaths_lexis", 
+         username = Sys.getenv("HMD_USERNAME"), 
+         password = Sys.getenv("HMD_PASSWORD")
+      ) |> 
+          filter(Age == 0) |> 
+          arrange(Cohort) %>% 
+          set_names(nm = tolower(names(.))) |> 
+          select(-openinterval) |> 
+          pivot_longer(
+            cols = female:total, 
+            names_to = "sex", 
+            values_to  = "deaths"
+          )    
+      }
+    ),
+    expos_tri = map(
+      code, 
+      function(x) {
+      HMDHFDplus::readHMDweb(x, "Exposures_lexis",
+         username = Sys.getenv("HMD_USERNAME"),
+         password = Sys.getenv("HMD_PASSWORD")
+     ) |> 
+          filter(Age == 0) |> 
+          arrange(Cohort) %>% 
+          set_names(nm = tolower(names(.))) |> 
+          select(-openinterval) |> 
+          pivot_longer(
+            cols = female:total, 
+            names_to = "sex", 
+            values_to  = "exposures"
+          )         
+    }
+    )
+  )
+
+tidy_df <- 
+  df |> 
+    select(code, death_tri) |> 
+    unnest(death_tri) |> 
+    inner_join(
+      df |> 
+        select(code, expos_tri) |> 
+        unnest(expos_tri)) |> 
+    filter(year >= cohort) |> 
+    mutate(
+      tri_type = ifelse(cohort == year, "lower", "upper")
+    ) 
+```
+
+The above uses the HMDHFDPlus package to load data directly from the Human Mortality Database. Unfortunately this works some of the time but not all of the time.
+
+So let's do the Blue Peter thing and load the dataset we created earlier
+
+```{r}
+library(tidyverse)
+tidy_df <- read_rds("data/tidy_df.rds")
+```
+
+I'm not sure, but think it's worth trying to sum up deaths and exposures by cohort to produce lexis parallelograms
+
+```{r}
+lx_par_df <- 
+  tidy_df |> 
+    group_by(code, cohort, sex) |> 
+    reframe(
+      deaths = deaths[tri_type=='lower'] + deaths[tri_type == 'upper'],
+      exposures = exposures[tri_type == 'lower'] + exposures[tri_type == 'upper']
+    )
+
+
+```
+
+## Descriptive plots
+
+Let's look at how IMR varies over time by country
+
+```{r}
+
+lx_par_df |> 
+  mutate(
+    imr = deaths / exposures
+  ) |> 
+  ggplot(aes(x = cohort, y = imr)) + 
+  geom_point(alpha = 0.2) + 
+  scale_y_log10() + 
+  labs(x = "Birth cohort", y = "Infant Mortality Rate (Log scale)",
+       title = "IMR for selected countries")
+
+```
+
+We should maybe focus on post 1970, and look at sex separately.
+
+```{r}
+
+lx_par_df |> 
+  mutate(
+    imr = deaths / exposures
+  ) |> 
+  filter(sex != 'total') |> 
+  filter(cohort >= 1970) |> 
+  ggplot(aes(x = cohort, y = imr, group = paste0(code, sex), colour = sex)) + 
+  geom_line() +
+  scale_y_log10() + 
+  facet_wrap(~code) + 
+  labs(x = "Birth cohort", y = "Infant Mortality Rate (Log scale)",
+       title = "IMR for selected countries")
+```
+
+So, in log space, for each country, male IMRs look like female IMRs, but shifted up by a given amount.
+
+This given amount looks similar for all countries. This is a simplifying assumption we can make.
+
+Another simplifying/stylising assumption we can make is that mortality trends over time is log linear. Country effects then further adjust upwards or downwards from this general trend. (This are simply assumptions we can then develop further and critique afterwards. But they're reasonable starting places.)
+
+We can select a reference country. I think this should be Norway (and aspirational reference country!).
+
+## Modelling and model predictions
+
+### Running linear regression models
+
+We can start with simple linear regression
+
+```{r}
+training_data <- 
+  lx_par_df |> 
+  mutate(
+    imr = deaths / exposures
+  ) |> 
+  filter(sex != 'total') |> 
+  filter(cohort >= 1970) |> 
+  mutate(yrs_since_1970 = cohort - 1970) |> 
+  mutate(code = factor(code)) |> 
+  mutate(code = relevel(code, "NOR"))
+
+# First model: only time matters
+mod_00 <- lm(log(imr) ~ yrs_since_1970, 
+             data = training_data)
+
+# Second model: sex also matters 
+mod_01 <- lm(log(imr) ~ yrs_since_1970 + sex, 
+             data = training_data)
+
+# Third model: country also matters
+mod_02 <- lm(log(imr) ~ yrs_since_1970 + sex + code, 
+             data = training_data)
+
+
+```
+
+### Comparing models
+
+Each of the above models is more complex (parameterised) than the last. We can test whether the greater complexity is justified using F-tests (via ANOVA) and using something like BIC and AIC
+
+```{r}
+anova(mod_00, mod_01)
+# Significantly better going from model 00 to model 01
+anova(mod_01, mod_02)
+# Significantly better going from model 01 to model 02
+
+AIC(mod_00, mod_01, mod_02)
+# Mod 02 much better than the other two models
+BIC(mod_00, mod_01, mod_02)
+# Mod 02 much better than the other two models
+
+```
+
+The above all indicate country effects should be included.
+
+### Interpreting model output 
+
+The best of the three models has the following summary output
+
+```{r}
+summary(mod_02)
+```
+
+The model predicts that, each year, log IMR falls by -0.0376992. The exponent of this is 0.9630026, so on average each year IMR falls by about 3.7% compared with the previous year.
+
+**Note: To test for slowdown, include additional time-related terms, such as whether the year is 2012 or after. Then use ANOVA/AIC/BIC to see if the additional term is justified by better fit.**
+
+Similarly, the exponents of the sex and country terms indicate what % higher or lower male IMR is than female, and how much higher it is in specific countries compared with Norway.
+
+```{r}
+
+implied_hazard_shifts <- 
+  broom::tidy(mod_02) |> 
+    filter(str_detect(term, "code|sex") ) |> 
+    mutate(term = str_remove(term, "sex")) |> 
+    mutate(term = str_remove(term, "code")) |> 
+    select(term, estimate) |> 
+    mutate(hazard_shift = exp(estimate)) |> 
+    arrange(desc(hazard_shift)) 
+
+implied_hazard_shifts
+```
+
+Over this time period, IMRs in Poland are on average 146% higher (100 \* (2.46 - 1)) than for the reference country, Norway. The next highest increased risk is living in the USA, where the IMR risks are 85% higher then in Norway, then in the UK (GBR_NP), where the risks are 47% higher. Only Sweden and Finland have lower IMR risks then Norway, with IMR risks around 9-10% lower.
+
+For comparison, the male IMR is on average higher 25% than the corresponding female IMR.
+
+### Examples of more complex models (e.g. to test Austerity hypotheses)
+
+We can consider specifications that 'flag' years after 2012 as different from previous years. We can also look at specifications where these flags apply differently by countries.
+
+```{r}
+mod_03 <- lm(log(imr) ~ yrs_since_1970 + sex + code + post_2012, 
+             #post_2012 is our 'flag'
+             data = training_data |> 
+               mutate(post_2012 = cohort >= 2012)
+          )
+
+mod_04 <- lm(log(imr) ~ yrs_since_1970 + sex + code * post_2012, 
+             #post_2012 is our 'flag'. The * after code means it interacts with country (i.e. is experienced differently in) different countries
+             data = training_data |> 
+               mutate(post_2012 = cohort >= 2012)
+             # n.b. we can just about use cohort as year as looking at IMR
+          )
+
+
+```
+
+We can compare these models using the same strategy as before:
+
+```{r}
+anova(mod_02, mod_03)
+# significantly better
+anova(mod_03, mod_04)
+# also significnatly better 
+
+AIC(mod_00, mod_01, mod_02, mod_03, mod_04)
+BIC(mod_00, mod_01, mod_02, mod_03, mod_04)
+# The most complex also preferred
+```
+
+```{r}
+summary(mod_04)
+```
+
+Because of the presence of interaction terms, the coefficients are now somewhat harder to interpret directly. Instead, we can look at the predicted values they imply, and how they differ between countries.
+
+### Showing what a model specification predicts
+
+```{r}
+pred_df <- 
+  expand_grid(
+    cohort = 1990:2022, 
+    sex = c("male", "female"),
+    code = c(
+    "AUT", #Austria
+    "BEL", #Belgium
+    "FIN", #Finland
+    "FRATNP", #France
+    "DEUTNP", #Germany
+    "ITA", #Italy
+    "NLD", #Netherlands
+    "NOR", #Norway
+    "POL", #Poland
+    "SWE", #Sweden
+    "USA", #USA
+    "GBR_NP" #UK
+    )
+  )  |> 
+  mutate(
+    yrs_since_1970 = cohort - 1970,
+    post_2012 = cohort >= 2012
+  )
+
+preds <- predict(mod_04, newdata = pred_df)
+
+preds_pred_df <- 
+  pred_df |> 
+  mutate(
+    pred_limr = preds
+  )
+```
+
+Now to visualise
+
+```{r}
+preds_pred_df |> 
+  left_join(training_data) |> 
+  mutate(
+    obs_limr = log(imr)
+  ) |> 
+  ggplot(aes(x = cohort, color = sex)) + 
+  geom_point(aes(y = obs_limr)) + 
+  geom_line(aes(y = pred_limr)) + 
+  facet_wrap(~code) + 
+  labs(x = "Birth cohort", 
+       y = "Log IMR",
+       title = "Observed and predicted Log IMR for selected countries",
+       subtitle = "Points: Observed. Lines: Predicted")
+```
+
+The lines showing the model predictions show the importance of structural assumptions in the model. The model assumes a constant annual rate of mortality improvement throughout the whole series, and then allows the line over time to be moved upwards or downwards in log space for 2012 onwards.
+
+### Deciding whether a more complex model is worth its additional complexity
+
+For countries where there has been slowdown after around 2012, this structural assumption might not be appropriate. Instead we should consider models in which the rate of improvement over time itself is allowed to be different after 2012 than before. As before we can build this model specification and compared the penalised fit.
+
+```{r}
+mod_05 <-  lm(log(imr) ~ yrs_since_1970 + sex + code * yrs_since_2012, 
+              #Now using yrs_since_2012, which allows change in slope not just intercept
+             data = training_data |> 
+               mutate(
+                 post_2012 = cohort >= 2012,
+                 yrs_since_2012 = ifelse(
+                   post_2012, 
+                   cohort - 2012,
+                   0
+                  )
+                 )
+             # n.b. we can just about use cohort as year as looking at IMR
+          )
+```
+
+Compare the models
+
+```{r}
+AIC(
+  mod_00, mod_01, mod_02, mod_03, mod_04, mod_05
+)
+BIC(
+  mod_00, mod_01, mod_02, mod_03, mod_04, mod_05
+)
+```
+
+The model allowing a different slope for post 2012 doesn't outperform the simpler model which simply adjusts the trend upwards or downwards. This suggests that the simpler model may be 'good enough' for producing summary estimates of how large any post 2012 slowdown may have been in IMR trends for different countries, even though it's qualitatively not quite the pattern we see in the data.
+
+Further model specifications, representing different theories about these trends and how they differ between places, can also be tried. In particular models including one or more breakpoints in the IMR trends may be worth looking at, as in [this paper](https://www.dannydorling.org/wp-content/files/dannydorling_publication_id9575.pdf). (i.e. the code in that paper, which looks at $e_0$ and $e_{65}$, could also be applied to IMR trends as well.)
+
+### Summarising the 'good enough' model
+
+Model 04, which is structurally overly 'stylised' (i.e. doesn't look right) but still preferred over the more complex model 05, allows for single summary estimates of what's happened to IMR trends post 2012. Or more specifically by what % earlier trends were 'set back' compared with the pre 2012 period.
+
+As Norway is the reference category, we know the coefficient `post_2012TRUE` corresponds to Norway. This coefficient is about 0.0114. The exponent of this is 1.12, so around a 12% higher IMR for Norway compared with the pre 2012 trend.
+
+For other countries, the `post_2012TRUE` coefficient needs to be added to the country-specific coefficient (e.g. `post_2012TRUE + codeGBR_NP:post_2012TRUE` for the UK), before exponentiating.
+
+For the UK the estimate of how much IMRs were set back from 2012 onwards is `exp(0.1137773 + 0.1859303)` , which is 1.349, suggesting that from 2012 IMRs were around 35% higher than the long-term trend.
+
+The following code shows the same for all other countries
+
+```{r}
+broom::tidy(mod_04) |> 
+  filter(str_detect(term, "post_2012")) |> 
+  mutate(
+    code = str_remove(term, "post_2012TRUE"),
+    code = str_remove(code, "code"),
+    code = str_remove(code, ":"),
+    code = ifelse(code == "", "NOR", code)
+  ) |> 
+  mutate(
+    delta = ifelse(
+      code == "NOR", 
+      estimate,
+      estimate + estimate[code == "NOR"]
+    )
+  ) |> 
+  mutate(
+    pct_change = exp(delta) 
+  ) |> 
+  select(code, pct_change) |> 
+  arrange(desc(pct_change))
+```
+
+This suggests that the post 2012 period is associated with substantial setbacks in IMR in almost all countries included, with the exception of Italy and Poland. The USA has the highest rate of 'setback' relative to earlier trends, with IMR estimated to be around 70% higher than if there had not been a setback from 2012.
+
+## Summary
+
+This notebook includes scripts for:
+
+-   Getting data from a standard resource
+
+-   Running a series of stylised models of IMR against time
+
+-   Producing single parameter summaries of sex and country-specific differences in overall trends
+
+-   Comparing between different model specifications and trying to find the right balance between model complexity and model accuracy
+
+-   Producing model predictions and plotting these against observed values.
+
+The model specifications considered are not the only models worth considering, and the 'best' model presented, model 4, stylises the post 2012 effect in ways that are not especially realistic. However it does allow single summary estimates of differences both prior and post 2012 between countries, and the general strategy can be adapted to other countries and datasets.
+
+### Not covered
+
+-   Other ways of comparing model fit (e.g. RMSE)
+
+-   Negative binomial modelling (largely the same specification, but may produce more plausible confidence intervals
+
+## Appendix: Downloading directly from HMD
+
+The first script downloads directly from the Human Mortality Database.
+
+This requires both registering with the HMD, adding username and password as environment variables to R, and also a lot of luck. To try this out do the following:
+
+1.  Register with the Human Mortality Database at https://mortality.org. Make sure to record username and password
+2.  Within R, and within the console, set the environment variables as follows:
+
+```         
+Sys.setenv(HMD_USERNAME = "<WHATEVER YOUR USERNAME IS>")
+Sys.setenv(HMD_PASSWORD = "<WHATEVER YOUR PASSWORD IS>")
+```
+
+To test that the environment variables have been set correctly
+
+```         
+Sys.getenv("HMD_USERNAME") # Should return username
+Sys.getenv("HMD_PASSWORD") # Should return password
+```
+
+If these are set correctly, then the first chunk of code *should* work
+
+3.  To try this in practice, make sure to change `eval=false` to `eval=true` in this first chunk

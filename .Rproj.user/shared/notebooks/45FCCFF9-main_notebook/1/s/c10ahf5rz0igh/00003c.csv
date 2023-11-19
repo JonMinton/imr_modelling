@@ -1,0 +1,50 @@
+"0","df <- df |> 
+  mutate(
+    death_tri = map(
+      code, 
+      function(x) {
+      HMDHFDplus::readHMDweb(x, ""Deaths_lexis"", 
+         username = Sys.getenv(""HMD_USERNAME""), 
+         password = Sys.getenv(""HMD_PASSWORD"")
+      ) |> 
+          filter(Age == 0) |> 
+          arrange(Cohort) %>% 
+          set_names(nm = tolower(names(.))) |> 
+          select(-openinterval) |> 
+          pivot_longer(
+            cols = female:total, 
+            names_to = ""sex"", 
+            values_to  = ""deaths""
+          )    
+      }
+    ),
+    expos_tri = map(
+      code, 
+      function(x) {
+      HMDHFDplus::readHMDweb(x, ""Exposures_lexis"",
+         username = Sys.getenv(""HMD_USERNAME""),
+         password = Sys.getenv(""HMD_PASSWORD"")
+     ) |> 
+          filter(Age == 0) |> 
+          arrange(Cohort) %>% 
+          set_names(nm = tolower(names(.))) |> 
+          select(-openinterval) |> 
+          pivot_longer(
+            cols = female:total, 
+            names_to = ""sex"", 
+            values_to  = ""exposures""
+          )         
+    }
+    )
+  )
+"
+"2","Warning in .Internal(gc(verbose, reset, full)) :"
+"2","
+ "
+"2"," closing unused connection 4 (https://www.mortality.org)
+"
+"2","Warning in .Internal(gc(verbose, reset, full)) :"
+"2","
+ "
+"2"," closing unused connection 3 (https://www.mortality.org)
+"

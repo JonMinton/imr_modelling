@@ -1,0 +1,19 @@
+"0","training_data <- 
+  lx_par_df |> 
+  mutate(
+    imr = deaths / exposures
+  ) |> 
+  filter(sex != 'total') |> 
+  filter(cohort >= 1970) |> 
+  mutate(yrs_since_1970 = cohort - 1970) |> 
+  mutate(code = relevel(code, ""NOR""))
+"
+"1","[1m[33mError[39m in `mutate()`:[22m
+[38;5;255m[36mℹ[38;5;255m In argument: `code = relevel(code, ""NOR"")`.[39m
+[1mCaused by error in `relevel.default()`:[22m
+[33m![39m 'relevel' only for (unordered) factors
+Backtrace:
+[90m  1. [39m[1mdplyr[22m::mutate(...)
+[90m  9. [39m[1mstats[22m:::relevel.default(code, ""NOR"")
+[90m 10. [39m[1mbase[22m::stop(""'relevel' only for (unordered) factors"")
+"
